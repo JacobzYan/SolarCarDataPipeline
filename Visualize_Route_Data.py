@@ -31,9 +31,8 @@ def draw_map(ax, combined_df):
 
     
     edge_padding = 2
-    map_plot.set_xlim(min(route_points_lon)-edge_padding, min(route_points_lon)+edge_padding)
+    map_plot.set_xlim(min(route_points_lon)-edge_padding, max(route_points_lon)+edge_padding)
     map_plot.set_ylim(min(route_points_lat)-edge_padding, max(route_points_lat)+edge_padding)    
-    map_plot.set_ylim(30, 35)
     map_plot.set_title('Mapped Route')
     
 
@@ -71,8 +70,8 @@ f_wind_data = np.array(combined_df['front_wind_speed'].tolist())[:,:future_hours
 s_wind_data = np.array(combined_df['side_wind_speed'].tolist())[:,:future_hours].transpose()
 CS_irr_data = np.array(combined_df['CS_irr'].tolist())[:,:future_hours].transpose()
 
-
-
+print(f'Plotting...')
+sys.stdout.flush()
 
 fig = plt.figure(1, figsize=(10,10), layout='tight')
 
