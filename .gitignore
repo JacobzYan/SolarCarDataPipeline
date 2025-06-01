@@ -1,0 +1,5 @@
+pyomoDocumentation.pdf
+
+# Large File Formats
+*.shp
+*.grib2
