@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import geopandas as gpd
 import sys
+import zipfile
 # from JZY_Solar_Race_Strategy import GetFilepath
 from .GetFilepath import *
 
@@ -19,8 +20,30 @@ def draw_map(ax, combined_df):
     google_crs = 'EPSG:4326'  # CRS used by google maps API
     output_crs = ''  # CRS in meters for human readable output
 
-    # Get US Map
+    # Check if shpfiles are zipped/exist
+    filepaths = [
+                 'Apollo/Route_Data/Map_Data/Road_Map_shpfile/tl_2022_us_primaryroads',
+                 'Apollo/Route_Data/Map_Data/US_County_shpfile/US_county_cont'
+                ]
+    for path in filepaths:
+        if os.path.exists(path + ".shp"):
+            continue
+        if not os.path.exists(path + ".zip"):
+            raise LookupError(f'Unable to find file or compressed version for {path.split('/')[-1]}')
+        
+        # Unzip file
+        zip_file_path = path + '.zip'
+        extraction_path = filepaths.rsplit('/')[0]
+        try:
+            with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+                zip_ref.extractall(extraction_path)
+            print(f"'{zip_file_path}' successfully unzipped to '{extraction_path}'")
+        except FileNotFoundError:
+            print(f"Error: The file '{zip_file_path}' was not found.")
+        except Exception as e:
+            print(f"An error occurred: {e}")
 
+    # Get US Map
     us_county = gpd.read_file(GetFilepath('Data/Required/US_COUNTY_SHPFILE/US_county_cont.shp'))
     us_states = us_county.dissolve(by='STATE_NAME', aggfunc='sum')
     us_roads = gpd.read_file(GetFilepath('Data/Required/ROAD_MAP_SHPFILE/tl_2022_us_primaryroads.shp'))

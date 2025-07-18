@@ -5,17 +5,20 @@ import matplotlib.pyplot as plt
 import sys
 import shapely
 import math
-from Grab_API_key import Grab_API_Key as get_key
-from .Get_Weather import get_weather_data
+import time
+# from Grab_API_key import Grab_API_Key as get_key
+# from .Get_Weather import get_weather_data
 import numpy as np
+import pandas as pd
+from pyproj import Geod
 
 # Google Maps API URLs
 NAVIGATION_GOOGLE_MAPS_API_URL = "https://maps.googleapis.com/maps/api/directions/json"
 ELEVATION_GOOGLE_MAPS_API_URL = "https://maps.googleapis.com/maps/api/elevation/json"
 
 
-# Later convert to the route API instead of directions
-def get_route_coordinates(api_key, start, end, waypoints=None):
+# DEPRICATED in favor of using FOS alternatives (Nominatum, OSRM based on OSM)
+def DEPRICATED_get_route_coordinates(api_key, start, end, waypoints=None):
     """
     Get route from Google Maps Directions API and decode polyline.
     Typically called by get_route() or on its own
@@ -166,9 +169,8 @@ def get_route_coordinates(api_key, start, end, waypoints=None):
 
     return decoded_points, route_length
 
-
 # Gets elevations for route points
-def get_elevations(api_key, route_points):
+def DEPRICATED_get_elevations(api_key, route_points):
     """
     Retrieves corresponding elevations from the google elevations API
     Typically called by get_route()
@@ -248,7 +250,7 @@ def get_elevations(api_key, route_points):
     return elevation_df
 
 # Calls the above function to get a full set of route data
-def get_route(api_key, start, end, waypoints=None):
+def DEPRICATED_get_route(api_key, start, end, waypoints=None):
     """
     Retrieves all relevant locational and weather data for the next 48 hours
     Top level in this function
@@ -265,7 +267,7 @@ def get_route(api_key, start, end, waypoints=None):
     """
 
     # Get the route
-    route_data = get_route_coordinates(api_key, start, end, waypoints)
+    route_data = DEPRICATED_get_route_coordinates(api_key, start, end, waypoints)
 
     # read in points data to plot
 
@@ -286,7 +288,7 @@ def get_route(api_key, start, end, waypoints=None):
 
     # Add elevations
     # route_points.drop("distance_deg", axis=1, inplace=True)
-    route_data = get_elevations(api_key, route_data)
+    route_data = DEPRICATED_get_elevations(api_key, route_data)
     # combined_df = route_points.merge(
     #     elevation_df, "outer", left_index=True, right_index=True, suffixes=("", "_elev")
     # )
@@ -298,41 +300,235 @@ def get_route(api_key, start, end, waypoints=None):
     return route_data
 
 
+
+
+
+
+# Get a coordinate from an address
+def getCoordinate(address, verbose=False):
+    '''
+    INPUTS
+    -------
+    address : The desired street address of the desired point
+
+    RETURNS
+    -------
+    A Tuple of coordinates in the (lat, lon) format in the EPSG4326/WGS84 CRS
+    '''
+
+    if verbose:
+        print(f'Finding Coordinates for address: {address}')
+    
+    # Build query
+    nominatumURL = 'https://nominatim.openstreetmap.org/search.php'
+    nominatumParams = {
+        'q': address,
+        'format': 'json',
+        'limit': 1
+    }
+    nominatumHeaders = {
+        "User-Agent": "LHR_Solar_Apollo_Race_Strategy/1.0 (jacob.z.yan@utexas.edu)" # Replace contact info with a permenant team address
+    }
+
+    # Process Response
+    nominatumResponse = requests.get(nominatumURL, params=nominatumParams, headers=nominatumHeaders)
+    if nominatumResponse.status_code != 200:
+        print(f'Nominatum call unsuccessful')
+        print(nominatumResponse.status_code)
+        return (0,0) # Default
+    
+    data = nominatumResponse.json()
+    boundingbox_str = data[0]['boundingbox']
+    boundingbox = [float(x) for x in boundingbox_str]
+    center = (np.mean(boundingbox[2:4]).item(), np.mean(boundingbox[0:2]).item())
+    
+    if verbose:
+        print(f'Address found at: {center}')
+
+    return center    
+
+
+# Get path gdf from a list of coordinates
+def getRouteCoordinates(waypointCoords, verbose=False):
+    '''
+    INPUTS
+    -----
+    waypointCoords: a list of tuples of coordinates in the (lon, lat) format in the EPSG4326/WGS84 CRS
+    corresponding to the waypoints that must be visited in the route including the start and end
+
+    OUTPUTS
+    -----
+    a geodataframe with the following columns:
+        geometry: A list of points that define the route
+        dist_to_next: distance to next point [m]
+        cum_dist: cumulative distance [m]
+        heading: The heading of the car in radians to the next point. CCW with north being up
+    '''
+    # === Get Route Points ===
+
+    if verbose:
+        print(f'Getting route between points: ')
+        for point in waypointCoords:
+            print(f'\t{waypointCoords}')
+
+    # Build Query
+    coordListStr = [f'{coord[0]},{coord[1]}'for coord in waypointCoords]
+    OSRMpath = ';'.join(coordListStr)
+    OSRMparams = {
+        "overview": "full",
+        "geometries": "geojson"
+    } # equivalent to appending this: ?overview=full&geometries=geojsonss
+    OSRM_URL = f"http://router.project-osrm.org/route/v1/driving/{OSRMpath}"
+
+    # Process Response
+    OSRMresponse = requests.get(OSRM_URL, params=OSRMparams)
+    if OSRMresponse.status_code != 200:
+        print('OSRM request failed')
+        print(f'code: {OSRMresponse.status_code}')
+        print(f'URL: {OSRMresponse.url}')
+        return None
+
+    data = OSRMresponse.json()
+    coordinates = np.matrix(data['routes'][0]['geometry']['coordinates']) #.transpose()
+    df=pd.DataFrame(coordinates, columns=['lon', 'lat'])
+    routePoints = gpd.GeoDataFrame(geometry=gpd.points_from_xy(df['lon'],df['lat'],crs="EPSG:4326"))
+
+    # === Process distance, heading data ===
+    geod = Geod(ellps='WGS84')
+    legLens = [0]*len(routePoints)
+    legBearings = legLens.copy()
+    for i in range(len(routePoints)-1):
+        
+        p1 =routePoints['geometry'][i]
+        p2 =routePoints['geometry'][i+1]
+        bearing,_, legDist = geod.inv(p1.x, p1.y, p2.x, p2.y)#[0,2]
+
+        legLens[i] = legDist
+        legBearings[i] = bearing
+
+    # Measurements are "to next point" -> Last heading matches the 2nd to last, last length is 0
+    legBearings[-1] = legBearings[-2]
+
+    routePoints['legLength'] = legLens
+    routePoints['bearing'] = legBearings
+    routePoints['cumLength'] = np.cumsum(legLens)
+
+    return routePoints
+    
+
+# Get elevations for each coordinate point in a geoDataFrame
+def getElevations(gdf, verbose=False):
+    openElevationURL = 'https://api.open-elevation.com/api/v1/lookup?locations='
+    
+    nPoints = len(gdf['geometry'])
+    pointsPerRequest = 300 # 400 is on the line depending on number of sigfigs
+
+    nRequests = int(nPoints / pointsPerRequest)+1
+    nTries = 10
+    elevations = [-1]*nPoints
+
+    if verbose:
+        print(f'Finding Elevations: ')
+
+    for i in range(nRequests): #nRequests): # DEBUGGING
+
+        # Store bottom/top indexes for the subsampled range
+        iBottom = i*pointsPerRequest
+        iTop =  min((i+1)*pointsPerRequest, nPoints)
+
+
+        if verbose:
+            print(f'\tindexes: [{iBottom}:{iTop}] - batch {i+1}/{nRequests}')
+            sys.stdout.flush()
+
+        cordinateSubset = gdf['geometry'][iBottom:iTop]
+
+        coordListStr = [f'{coord.y},{coord.x}'for coord in cordinateSubset]
+        batchURL = openElevationURL + '|'.join(coordListStr)
+
+        segmentFailed = True
+        for ii in range(nTries):
+            elevationResponse = requests.get(batchURL)
+
+            if elevationResponse.status_code != 200:
+                if verbose:
+                    print(f'\tRetrying({ii+1}/{nTries}) - Code {elevationResponse.status_code}')
+                    sys.stdout.flush()
+                    time.sleep(3)
+                continue
+            
+            data = elevationResponse.json()
+            
+            # print(f'elevations: ')
+            # for i in data['results']:
+            #     print(f'\t{i}')
+            elevations[iBottom:iTop]= [datapoint['elevation'] for datapoint in data['results']]
+            segmentFailed = False
+            break
+
+        if segmentFailed:
+            print('Open Elevation request failed')
+            print(f'code: {elevationResponse.status_code}')
+            # print(f'URL: {elevationResponse.url}')
+            return None
+
+    gdf['elevation'] = elevations
+    return gdf
+
+
+
+def getRoute(waypointInputs, verbose=False):
+    
+    # Input cleaning
+    isAddress = False
+    try:
+        if type(waypointInputs[0]) == type(''):
+            isAddress = True
+    except:
+        raise TypeError('Input must be an iterable of either addresses(str), or coordinate points(tuples)')
+    
+    if isAddress:
+        waypoints = [getCoordinate(address, verbose=verbose) for address in waypointInputs]
+    else:
+        waypoints=waypointInputs
+    
+    # Get data
+    gdf = getRouteCoordinates(waypoints, verbose=verbose)
+    gdf = getElevations(gdf, verbose=verbose)
+    
+    return gdf
+
+
 # Testing
 if __name__ == "__main__":
     # Testing
-    API_KEY = get_key("Google_Maps")  # Replace with your API key
-    # Define start, end and waypoints (if any)
-    start = "Dallas, TX"  # Starting location (can be address or lat/lng)
-    end = "Austin, TX"  # Destination location (can be address or lat/lng)
-    waypoints = []
-    # waypoints = ['Chicago, IL', 'Denver, CO']  # Optional intermediate points
+    # Define start, end and waypoints, (can be address or lat/lng)
 
-    combined_df = get_route(API_KEY, start, end, waypoints)
+    startAddress = '10131 Harry Ransom Trail, Austin, TX 78758' # (Pickle)
+    endAddress = '800 W Campbell Rd, Richardson, TX 75080' # (UTD)
+    waypoints = [startAddress, endAddress]
 
-    route_points_lat = []
-    route_points_lon = []
+    combinedDf = getRoute(waypoints, verbose=False)
 
-    for i in combined_df["geometry"]:
-        route_points_lat.append(i.x)
-        route_points_lon.append(i.y)
 
-    print(f"combined df:\n{combined_df}")
-    # print(f'route points: \n{route_points}')
-    # print(f'elevation_df: \n{elevation_df}')
-    # print(f"combined df: \n{combined_df}")
-
+    print(f"combined df:\n{combinedDf}")
     print(f'DF columns:')
-    for i in combined_df.columns:
+    for i in combinedDf.columns:
         print(f'\t{i}')
-
     sys.stdout.flush()
 
-    google_crs = "EPSG:4326"  # CRS used by google maps API
-    output_crs = ""  # CRS in meters for human readable output
+    plt.plot(combinedDf['elevation'])
+    
 
     # Get US Map
     try:
+
+        route_points_lat = []
+        route_points_lon = []
+        for i in combinedDf["geometry"]:
+            route_points_lat.append(i.x)
+            route_points_lon.append(i.y)
+
         us_county = gpd.read_file("US_COUNTY_SHPFILE/US_county_cont.shp")
         us_states = us_county.dissolve(by="STATE_NAME", aggfunc="sum")
         us_roads = gpd.read_file("ROAD_MAP_SHPFILE/tl_2022_us_primaryroads.shp")
@@ -342,8 +538,9 @@ if __name__ == "__main__":
         fig = plt.figure(1)
         ax = fig.add_subplot(1, 1, 1)
         us_states.plot(ax=ax, edgecolor="grey", facecolor="k", linewidth=0.5)
-        ax.scatter(route_points_lon, route_points_lat, c=combined_df["elevation"])
+        ax.scatter(route_points_lon, route_points_lat, c=combinedDf["elevation"])
         us_roads.plot(ax=ax, edgecolor="white", linewidth=0.25)
-        # plt.show()
     except:
         print(f'Cannot find shapefiles for plotting')
+
+    plt.show()

@@ -2,6 +2,17 @@ import requests
 import xarray as xr
 import os
 import numpy as np
+
+'''
+Service options:
+open-meteo -> free and fully featured
+NOMADS
+'''
+
+
+
+
+
 # Define the updated URL for the GFS cloud cover data
 # 20241203 - start date YYYYMMDD
 # 0p25 -> forecast resolution
